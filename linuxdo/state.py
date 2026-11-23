@@ -20,10 +20,10 @@ class ForumError(Exception):
 
 
 @dataclass(frozen=True)
-class Credentials:
+class CookieConfig:
     generation: str
-    username: str = field(repr=False)
-    password: str = field(repr=False)
+    source: str
+    cookies: list[dict] = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -56,9 +56,11 @@ def write_private(path: Path, value: str) -> None:
 class Store:
     def __init__(self, root: Path = STATE_DIR):
         self.root = root
-        self.credentials_path = root / "credentials.json"
+        self.cookies_path = root / "cookies.json"
+        self.legacy_credentials_path = root / "credentials.json"
         self.hold_path = root / "forum-hold.json"
         self.token_path = root / "mcp-token"
+        self.sync_token_path = root / "cookie-sync-token"
 
     @contextmanager
     def service_lock(self):
@@ -66,22 +68,49 @@ class Store:
             fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
             yield
 
-    def credentials(self) -> Credentials | None:
+    @contextmanager
+    def config_lock(self):
+        with self.root.joinpath("config.lock").open("a") as file:
+            fcntl.flock(file, fcntl.LOCK_EX)
+            yield
+
+    def cookie_config(self) -> CookieConfig | None:
         try:
-            return Credentials(**json.loads(self.credentials_path.read_text(encoding="utf-8")))
+            return CookieConfig(**json.loads(self.cookies_path.read_text(encoding="utf-8")))
         except FileNotFoundError:
             return None
         except (ValueError, TypeError):
-            raise ForumError("credentials_invalid", "请重新运行账号配置命令。") from None
+            raise ForumError("cookies_invalid", "请重新导入论坛会话 Cookie。") from None
 
-    def configure(self, username: str, password: str) -> None:
-        value = Credentials(uuid4().hex, username, password)
-        write_private(self.credentials_path, json.dumps(asdict(value)))
+    def configure(self, cookies: list[dict], *, source: str = "manual") -> bool:
+        with self.config_lock():
+            try:
+                current = self.cookie_config()
+            except ForumError:
+                current = None
+            if current and current.cookies == cookies and current.source == source:
+                return False
+            value = CookieConfig(uuid4().hex, source, cookies)
+            write_private(self.cookies_path, json.dumps(asdict(value)))
+            return True
 
-    def token(self, *, create: bool = False) -> str:
-        if create and not self.token_path.exists():
-            write_private(self.token_path, secrets.token_urlsafe(32))
-        return self.token_path.read_text(encoding="utf-8")
+    def forget(self, *, source: str | None = None) -> bool:
+        with self.config_lock():
+            if source is not None:
+                current = self.cookie_config()
+                if not current or current.source != source:
+                    return False
+            try:
+                self.cookies_path.unlink()
+            except FileNotFoundError:
+                return False
+            return True
+
+    def token(self, *, create: bool = False, sync: bool = False) -> str:
+        path = self.sync_token_path if sync else self.token_path
+        if create and not path.exists():
+            write_private(path, secrets.token_urlsafe(32))
+        return path.read_text(encoding="utf-8")
 
     def hold(self) -> Hold | None:
         try:

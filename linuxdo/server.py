@@ -1,5 +1,8 @@
 import asyncio
+import hmac
+import json
 import os
+import re
 import secrets
 from contextlib import asynccontextmanager, suppress
 from typing import Annotated, Any
@@ -16,6 +19,7 @@ from starlette.routing import Mount, Route
 
 from linuxdo import forum
 from linuxdo.browser import Chrome
+from linuxdo.cookies import MAX_IMPORT_BYTES, normalize_cookies
 from linuxdo.session import Session, iso_timestamp
 from linuxdo.state import ForumError, Store
 
@@ -88,6 +92,47 @@ async def health(request):
     return JSONResponse({"chrome_sandbox": verified}, 200 if verified else 503)
 
 
+async def cookie_sync(request):
+    state = request.app.state
+    host = request.headers.get("host", "")
+    origin = request.headers.get("origin")
+    if not re.fullmatch(r"(127\.0\.0\.1|localhost)(:[0-9]+)?", host):
+        return JSONResponse({"error": "forbidden"}, 403)
+    if origin and not re.fullmatch(r"chrome-extension://[a-p]{32}", origin):
+        return JSONResponse({"error": "forbidden"}, 403)
+    if request.method == "GET":
+        challenge = request.query_params.get("challenge", "")
+        if not re.fullmatch(r"[0-9a-f]{32}", challenge):
+            return JSONResponse({"error": "invalid_challenge"}, 400)
+        proof = hmac.digest(state.sync_key, challenge.encode("ascii"), "sha256")
+        return JSONResponse({"proof": proof.hex()}, headers={"Cache-Control": "no-store"})
+
+    provided = request.headers.get("authorization", "").encode("latin-1")
+    if not secrets.compare_digest(provided, b"Bearer " + state.sync_key):
+        return JSONResponse({"error": "unauthorized"}, 401, headers={"WWW-Authenticate": "Bearer"})
+
+    if request.method == "DELETE":
+        try:
+            state.session.store.forget(source="browser")
+        except ForumError:
+            return JSONResponse({"error": "invalid_config"}, 422)
+        return JSONResponse({"state": "signed_out"})
+
+    if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
+        return JSONResponse({"error": "expected_json"}, 415)
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_IMPORT_BYTES:
+            return JSONResponse({"error": "too_large"}, 413)
+        body.extend(chunk)
+    try:
+        cookies = normalize_cookies(json.loads(body))
+    except (ValueError, RecursionError):
+        return JSONResponse({"error": "invalid_cookies"}, 422)
+    state.session.store.configure(cookies, source="browser")
+    return JSONResponse({"state": state.session.status()["state"]})
+
+
 @asynccontextmanager
 async def lifespan(app):
     store = Store()
@@ -96,10 +141,17 @@ async def lifespan(app):
         raise ValueError("LINUXDO_REFRESH_SECONDS must be at least 900")
     with store.service_lock():
         app.state.mcp_authorization = ("Bearer " + store.token(create=True)).encode("ascii")
+        app.state.sync_key = store.token(create=True, sync=True).encode("ascii")
+        store.legacy_credentials_path.unlink(missing_ok=True)
         async with async_playwright() as playwright:
             chrome = Chrome(playwright, store.root)
-            credentials = store.credentials()
-            await chrome.start(credentials.generation if credentials else "unconfigured")
+            config = None
+            with suppress(ForumError):
+                config = store.cookie_config()
+            if config:
+                await chrome.start(config.generation, config.cookies)
+            else:
+                await chrome.start("unconfigured")
             app.state.session = Session(chrome, store, refresh_seconds)
             async with mcp.session_manager.run():
                 background = asyncio.create_task(app.state.session.maintain())
@@ -113,6 +165,10 @@ async def lifespan(app):
 
 
 app = Starlette(
-    routes=[Route("/healthz", health), Mount("/", app=RequireMCPToken(mcp.streamable_http_app()))],
+    routes=[
+        Route("/healthz", health),
+        Route("/cookie-sync", cookie_sync, methods=["GET", "POST", "DELETE"]),
+        Mount("/", app=RequireMCPToken(mcp.streamable_http_app())),
+    ],
     lifespan=lifespan,
 )

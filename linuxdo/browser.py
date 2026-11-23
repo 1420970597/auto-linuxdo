@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager, suppress
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from time import time
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urlsplit
 
 from playwright.async_api import (
     BrowserContext,
@@ -16,15 +16,11 @@ from playwright.async_api import (
     TimeoutError as PlaywrightTimeout,
 )
 
-from linuxdo.state import Credentials, ForumError, write_private
+from linuxdo.cookies import ORIGIN
+from linuxdo.state import ForumError, write_private
 
-ORIGIN = "https://linux.do"
 AUTHENTICATED = ".d-header #current-user, .d-header .header-dropdown-toggle.current-user"
 SIGNED_OUT = ".d-header .login-button, #login-account-name"
-ACCOUNT = "input#login-account-name"
-PASSWORD = "input#login-account-password"
-SUBMIT = "button#login-button"
-LOGIN_ERROR = ".login-fullpage .alert-error, #login-alert, .login-error"
 VERIFICATION = (
     'input[autocomplete="one-time-code"], #second-factor, #login-second-factor, '
     '#security-key-authenticate-button, iframe[src*="challenges.cloudflare.com"], '
@@ -108,35 +104,6 @@ class Navigator:
         await self.wait(f"{AUTHENTICATED}, {SIGNED_OUT}")
         return await self.visible(AUTHENTICATED).is_visible()
 
-    async def login(self, credentials: Credentials, before_submit) -> None:
-        await self.open("/login")
-        await self.wait(f"{ACCOUNT}, {AUTHENTICATED}")
-        if await self.visible(AUTHENTICATED).is_visible():
-            return
-
-        account = self.visible(ACCOUNT)
-        password = self.visible(PASSWORD)
-        submit = self.visible(SUBMIT)
-        await self.wait(PASSWORD)
-        await self.wait(SUBMIT)
-        for field in (account, password, submit):
-            action = await field.evaluate(
-                "(field) => field.getAttribute('formaction') || field.form?.getAttribute('action') || ''"
-            )
-            if not same_origin(urljoin(self.page.url, action), self.origin):
-                raise ForumError("unexpected_origin", "登录表单已离开论坛域名。")
-
-        await self.check()
-        await account.fill(credentials.username)
-        await password.fill(credentials.password)
-        await self.throttle()
-        await self.check()
-        before_submit()
-        await submit.click()
-        await self.wait(f"{AUTHENTICATED}, {LOGIN_ERROR}", timeout=15_000)
-        if not await self.visible(AUTHENTICATED).is_visible():
-            raise ForumError("login_rejected", "论坛未接受登录，请检查账号或在论坛完成验证。")
-
 
 class Chrome:
     def __init__(
@@ -151,7 +118,7 @@ class Chrome:
         self.generation: str | None = None
         self.sandbox_verified = False
 
-    async def start(self, generation: str) -> None:
+    async def start(self, generation: str, cookies: list[dict] | None = None) -> None:
         if self.context and self.generation == generation:
             return
         await self.close()
@@ -159,10 +126,11 @@ class Chrome:
         profile = self.state_dir / "chrome"
         owner = self.state_dir / "chrome-generation"
         previous = owner.read_text(encoding="utf-8") if owner.exists() else None
-        if previous != generation:
+        new_profile = previous != generation
+        if new_profile:
+            owner.unlink(missing_ok=True)
             if profile.exists():
                 shutil.rmtree(profile)
-            write_private(owner, generation)
         profile.mkdir(mode=0o700, exist_ok=True)
 
         context = await self.playwright.chromium.launch_persistent_context(
@@ -196,6 +164,13 @@ class Chrome:
             if not all(re.search(pattern + r"\b", status, re.I) for pattern in required):
                 raise RuntimeError("Chrome sandbox verification failed (namespace and seccomp required)")
             await probe.goto("about:blank")
+            if new_profile:
+                if cookies:
+                    try:
+                        await context.add_cookies([{**cookie, "url": self.origin + "/"} for cookie in cookies])
+                    except PlaywrightError:
+                        raise RuntimeError("Chrome could not import forum cookies") from None
+                write_private(owner, generation)
         except BaseException:
             await self.close()
             raise
