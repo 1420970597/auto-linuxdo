@@ -51,8 +51,9 @@
 	],
 	"syscalls": [
 		{
-			"comment": "Allow create user namespaces",
+			"comment": "Allow Chrome to create namespaces and chroot inside its own user namespace",
 			"names": [
+				"chroot",
 				"clone",
 				"setns",
 				"unshare"

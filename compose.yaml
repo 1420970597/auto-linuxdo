@@ -6,6 +6,7 @@ services:
       context: .
       target: runtime
     init: true
+    hostname: linuxdo
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]
