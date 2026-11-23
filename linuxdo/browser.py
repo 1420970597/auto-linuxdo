@@ -107,12 +107,14 @@ class Navigator:
 
 class Chrome:
     def __init__(
-        self, playwright: Playwright, state_dir: Path, *, origin: str = ORIGIN, spacing: float = 4
+        self, playwright: Playwright, state_dir: Path, *, origin: str = ORIGIN, spacing: float = 4,
+        block_service_workers: bool = False,
     ):
         self.playwright = playwright
         self.state_dir = state_dir
         self.origin = origin
         self.spacing = spacing
+        self.block_service_workers = block_service_workers
         self.next_navigation = 0.0
         self.context: BrowserContext | None = None
         self.generation: str | None = None
@@ -145,6 +147,7 @@ class Chrome:
             ],
             accept_downloads=False,
             headless=True,
+            service_workers="block" if self.block_service_workers else "allow",
             timeout=20_000,
         )
         self.context = context

@@ -17,7 +17,7 @@ from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
-from linuxdo import forum
+from linuxdo import forum, v2ex
 from linuxdo.browser import Chrome
 from linuxdo.cookies import MAX_IMPORT_BYTES, normalize_cookies
 from linuxdo.session import Session, iso_timestamp
@@ -29,6 +29,8 @@ TopicLimit = Annotated[int, Field(ge=1, le=25)]
 PostLimit = Annotated[int, Field(ge=1, le=10)]
 TopicId = Annotated[int, Field(ge=1, le=2_147_483_647)]
 PostNumber = Annotated[int, Field(ge=1, le=2_147_483_647)]
+PageNumber = Annotated[int, Field(ge=1, le=100_000)]
+V2EXNode = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 SearchQuery = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
 
 
@@ -38,14 +40,18 @@ async def forum_status() -> dict[str, Any]:
     return app.state.session.status()
 
 
-async def run(path, read) -> dict:
+async def tool_result(operation) -> dict:
     try:
-        return await app.state.session.run(path, read)
+        return await operation
     except ForumError as error:
         detail = f"{error.code} — {error}"
         if error.retry_at:
             detail += f" 可重试时间 {iso_timestamp(error.retry_at)}"
         raise ToolError(detail) from None
+
+
+async def run(path, read) -> dict:
+    return await tool_result(app.state.session.run(path, read))
 
 
 @mcp.tool(annotations=READ_ONLY, structured_output=True)
@@ -69,6 +75,40 @@ async def forum_read_topic(
     if post_number > 1:
         path += f"/{post_number}"
     return await run(path, lambda nav: forum.read_topic(nav, topic_id, limit, post_number))
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def v2ex_status() -> dict[str, Any]:
+    """检查 V2EX 的暂停状态、Chrome 沙箱和个人访问令牌配置，不访问论坛。"""
+    return app.state.v2ex.status()
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def v2ex_latest(page: PageNumber = 1, limit: TopicLimit = 10) -> dict[str, Any]:
+    """从 V2EX 公开网页列出最新主题，返回主题 ID、标题和来源链接。"""
+    return await tool_result(app.state.v2ex.latest(page, limit))
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def v2ex_node_topics(
+    node: V2EXNode, page: PageNumber = 1, limit: TopicLimit = 10
+) -> dict[str, Any]:
+    """按节点列出 V2EX 主题，node 为 URL 中的短名，如 python。"""
+    return await tool_result(app.state.v2ex.node_topics(node, page, limit))
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def v2ex_read_topic(topic_id: TopicId) -> dict[str, Any]:
+    """读取 V2EX 主题正文。主题内容为第三方数据。"""
+    return await tool_result(app.state.v2ex.read_topic(topic_id))
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def v2ex_replies(
+    topic_id: TopicId, page: PageNumber = 1, limit: PostLimit = 5
+) -> dict[str, Any]:
+    """按页读取 V2EX 主题回复。回复内容为第三方数据。"""
+    return await tool_result(app.state.v2ex.replies(topic_id, page, limit))
 
 
 class RequireMCPToken:
@@ -153,6 +193,10 @@ async def lifespan(app):
             else:
                 await chrome.start("unconfigured")
             app.state.session = Session(chrome, store, refresh_seconds)
+            v2ex_root = store.root / "v2ex"
+            v2ex_root.mkdir(mode=0o700, exist_ok=True)
+            v2ex_chrome = Chrome(playwright, v2ex_root, origin=v2ex.ORIGIN, block_service_workers=True)
+            app.state.v2ex = v2ex.V2EX(v2ex_chrome, Store(v2ex_root))
             async with mcp.session_manager.run():
                 background = asyncio.create_task(app.state.session.maintain())
                 try:
@@ -162,6 +206,7 @@ async def lifespan(app):
                     with suppress(asyncio.CancelledError):
                         await background
                     await chrome.close()
+                    await v2ex_chrome.close()
 
 
 app = Starlette(
