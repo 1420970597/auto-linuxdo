@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Linux.do 会话同步",
+  "version": "1.0.0",
+  "description": "将当前 Chrome 的 Linux.do 会话同步到本机 Auto Linux.do。",
+  "permissions": ["cookies", "storage", "alarms"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "optional_host_permissions": ["https://linux.do/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "sync.html"}
+}

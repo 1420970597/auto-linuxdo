@@ -1,0 +1,53 @@
+/* Hallmark · shape: app screen · genre: modern-minimal · theme: neutral · signature: session status · v2.0.0 */
+/* Critique: Put the forum connection state above the pairing fields. */
+:root {
+  color-scheme: light;
+  --surface: #f6f8f7;
+  --field: #fbfdfc;
+  --text: #172421;
+  --muted: #465c54;
+  --line: #81998e;
+  --accent: #155b49;
+  --accent-hover: #0b4739;
+  --on-accent: #f6fcf9;
+  --disabled-fill: #e0ebe5;
+  --disabled-text: #486059;
+  --focus: #08785f;
+  --font: "Inter", "Noto Sans CJK SC", system-ui, sans-serif;
+}
+
+html, body { overflow-x: clip; }
+body {
+  margin: 0 auto;
+  width: 21rem;
+  max-width: 100%;
+  background: var(--surface);
+  color: var(--text);
+  font: 0.875rem/1.55 var(--font);
+}
+
+main { max-width: 23rem; margin: auto; padding: 1.125rem 1.25rem 1.25rem; }
+h1 { font-size: 1.15rem; margin: 0 0 0.55rem; overflow-wrap: break-word; min-width: 0; text-wrap: balance; }
+p { margin: 0 0 0.875rem; color: var(--muted); }
+#status { border-top: 1px solid var(--line); padding-top: 0.65rem; min-height: 2.8em; }
+label { display: block; font-weight: 600; margin-bottom: 0.25rem; }
+input, button {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 2.75rem;
+  border-radius: 0.375rem;
+  font: inherit;
+}
+input { padding: 0.375rem 0.625rem; margin-bottom: 0.75rem; color: var(--text); background: var(--field); border: 1px solid var(--line); }
+button { padding: 0.5rem 0.625rem; cursor: pointer; color: var(--on-accent); background: var(--accent); border: 1px solid var(--accent); font-weight: 600; }
+button:hover { background: var(--accent-hover); }
+button:active { transform: translateY(1px); }
+button:disabled { color: var(--disabled-text); background: var(--disabled-fill); cursor: wait; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.secondary { margin-top: 0.55rem; color: var(--accent); background: var(--field); }
+.secondary:hover { background: var(--surface); }
+.note { font-size: 0.8rem; margin: 0.55rem 0 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  button:active { transform: none; }
+}
