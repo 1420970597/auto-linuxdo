@@ -89,7 +89,7 @@ docker compose exec linuxdo python -m linuxdo.admin v2ex-configure
 
 - 服务默认每 7200 秒检查会话，读取时也会检查。可用 `LINUXDO_REFRESH_SECONDS` 调整间隔，最短 900 秒。会话被论坛撤销或到期时，需在自己的 Chrome 重新登录，扩展随后会同步新 Cookie，也可手动重新导入。
 - 导入的 Cookie 和 Cloudflare 验证 Cookie 保存在数据卷中，权限为 `0600`。升级时服务会删除旧账号密码文件。清除服务会话可运行 `docker compose exec linuxdo python -m linuxdo.admin forget`。
-- 论坛发出验证码、二次验证、访问拒绝或限流时，服务暂停并记录原因。重新同步 Cookie 不会解除站点暂停。限流遵守 `Retry-After`。站点限制解除后，运行 `docker compose exec linuxdo python -m linuxdo.admin resume` 恢复检查。
+- Linux.do 返回验证码时 `forum-fetch` 会当场求解；求解失败按访问拒绝暂停（`site_blocked`），并记录原因。V2EX 的人工验证、访问拒绝或限流会暂停 V2EX 读取。重新同步 Cookie 不会解除站点暂停。限流遵守 `Retry-After`。站点限制解除后，运行 `docker compose exec linuxdo python -m linuxdo.admin resume` 恢复检查。
 - MCP 默认只监听宿主机回环地址，端口可用 `LINUXDO_PORT` 修改。健康检查使用 `/healthz`，其中会检查 `forum-fetch` 及其指纹档案是否存在。
 
 ## 测试
