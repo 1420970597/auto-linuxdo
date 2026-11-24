@@ -8,7 +8,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from linuxdo.server import cookie_sync
-from linuxdo.state import Store
+from linuxdo.state import Hold, Store
 
 ORIGIN = "chrome-extension://" + "a" * 32
 
@@ -51,3 +51,10 @@ class CookieSyncTests(unittest.TestCase):
         self.client.post(remote, json=self.cookies, headers=headers).raise_for_status()
         self.client.delete(remote, headers=headers).raise_for_status()
         self.assertIsNone(self.store.cookie_config())
+
+    def test_remote_sync_retries_after_stale_session_pause(self):
+        self.store.set_hold(Hold("manual_verification", "old pause"))
+        headers = {"Origin": ORIGIN, "Authorization": "Bearer remote-fixture"}
+        response = self.client.post("/remote-cookie-sync", json=self.cookies, headers=headers)
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.store.hold())
