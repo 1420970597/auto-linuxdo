@@ -1,3 +1,4 @@
+import asyncio
 import json
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -5,8 +6,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
 from typing import cast
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request, urlopen
 
+from linuxdo.fetch import Fetch, Response
 from linuxdo.state import ForumError, Store
 from linuxdo.v2ex import V2EX, configure_token
 
@@ -101,6 +105,35 @@ class Fixture(BaseHTTPRequestHandler):
             )
 
 
+class FixtureFetch:
+    """Fetch stand-in that sends plain HTTP to the fixture server; the real transport has its own tests."""
+
+    def __init__(self, origin: str):
+        self.origin = origin
+
+    async def get(self, url: str, *, cookies=None, headers=None) -> Response:
+        return await asyncio.to_thread(self._get, url, dict(headers or {}))
+
+    def _get(self, url: str, headers: dict) -> Response:
+        if urlsplit(url).scheme != "http" or not url.startswith(self.origin):
+            raise ValueError("fixture transport only serves its own http origin")
+        try:
+            request = Request(url, headers=headers)
+            with urlopen(request, timeout=10) as response:  # nosec B310 (scheme pinned above)
+                return self._response(response, response.status)
+        except HTTPError as error:
+            return self._response(error, error.code)
+
+    def _response(self, source, status: int) -> Response:
+        return Response(
+            url=source.geturl(),
+            status=status,
+            text=source.read().decode("utf-8", "replace"),
+            solved=False,
+            headers={str(k).lower(): str(v) for k, v in source.headers.items()},
+        )
+
+
 class V2EXTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         root = Path(self.enterContext(TemporaryDirectory()))
@@ -115,7 +148,7 @@ class V2EXTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.http.shutdown)
         self.origin = f"http://127.0.0.1:{self.http.server_port}"
         self.store = Store(root)
-        self.forum = V2EX(self.store, origin=self.origin)
+        self.forum = V2EX(self.store, cast(Fetch, FixtureFetch(self.origin)), origin=self.origin)
 
     async def test_anonymous_recent_node_topic_and_replies(self):
         recent = await self.forum.latest(1, 1)
@@ -182,7 +215,9 @@ class V2EXTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(caught.exception.code, code)
                 self.assertEqual(self.forum.status()["state"], code)
                 previous = len(self.http.requests)
-                reopened = V2EX(self.store, origin=self.origin)
+                reopened = V2EX(
+                    self.store, cast(Fetch, FixtureFetch(self.origin)), origin=self.origin
+                )
                 with self.assertRaises(ForumError) as pause:
                     await reopened.latest(1, 10)
                 self.assertEqual(pause.exception.code, code)

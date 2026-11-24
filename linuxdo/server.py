@@ -191,7 +191,7 @@ async def lifespan(app):
         v2ex_root.mkdir(mode=0o700, exist_ok=True)
         v2ex_store = Store(v2ex_root)
         v2ex_store.discard_retired_files()
-        app.state.v2ex = v2ex.V2EX(v2ex_store)
+        app.state.v2ex = v2ex.V2EX(v2ex_store, Fetch(v2ex_store.root))
         async with mcp.session_manager.run():
             background = asyncio.create_task(app.state.session.maintain())
             try:
