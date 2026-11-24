@@ -13,12 +13,14 @@ from mcp.types import ToolAnnotations
 from playwright.async_api import async_playwright
 from pydantic import Field, StringConstraints
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from linuxdo import forum, v2ex
 from linuxdo.browser import Chrome
+from linuxdo.capture import CAPTURE_TOKEN_FILE, MAX_CAPTURE_BYTES, CapturedPage, Captures, Forum, PageURL
 from linuxdo.cookies import MAX_IMPORT_BYTES, normalize_cookies
 from linuxdo.session import Session, iso_timestamp
 from linuxdo.state import ForumError, Store
@@ -111,6 +113,24 @@ async def v2ex_replies(
     return await tool_result(app.state.v2ex.replies(topic_id, page, limit))
 
 
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def captured_pages(forum: Forum | None = None, limit: TopicLimit = 10) -> dict[str, Any]:
+    """列出由用户 Chrome 扩展保存的论坛页面。可按 linuxdo 或 v2ex 过滤。"""
+    return {"pages": await run_in_threadpool(app.state.captures.list, forum, limit)}
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def captured_page(url: PageURL) -> dict[str, Any]:
+    """读取已保存页面的纯文本和来源。页面内容是第三方数据。"""
+    try:
+        result = await run_in_threadpool(app.state.captures.read, url)
+    except ValueError:
+        raise ToolError("unsupported_page — 请提供支持的论坛 URL。") from None
+    if result is None:
+        raise ToolError("capture_missing — 请先在 Chrome 打开该页面并点击采集。")
+    return result
+
+
 class RequireMCPToken:
     def __init__(self, wrapped):
         self.wrapped = wrapped
@@ -176,6 +196,32 @@ async def cookie_sync(request):
     return JSONResponse({"state": state.session.status()["state"]}, headers={"Cache-Control": "no-store"})
 
 
+async def page_capture(request):
+    state = request.app.state
+    host = request.headers.get("host", "")
+    origin = request.headers.get("origin", "")
+    if not re.fullmatch(r"(127\.0\.0\.1|localhost)(:[0-9]+)?", host) or not re.fullmatch(
+        r"chrome-extension://[a-p]{32}", origin
+    ):
+        return JSONResponse({"error": "forbidden"}, 403)
+    provided = request.headers.get("authorization", "").encode("latin-1")
+    if not secrets.compare_digest(provided, b"Bearer " + state.capture_key):
+        return JSONResponse({"error": "unauthorized"}, 401)
+    if request.headers.get("content-type", "").split(";", 1)[0] != "application/json":
+        return JSONResponse({"error": "expected_json"}, 415)
+    body = bytearray()
+    async for chunk in request.stream():
+        if len(body) + len(chunk) > MAX_CAPTURE_BYTES:
+            return JSONResponse({"error": "too_large"}, 413)
+        body.extend(chunk)
+    try:
+        page = CapturedPage.model_validate_json(body)
+        summary = await run_in_threadpool(state.captures.save, page)
+    except ValueError:
+        return JSONResponse({"error": "invalid_page"}, 422)
+    return JSONResponse(summary, headers={"Cache-Control": "no-store"})
+
+
 @asynccontextmanager
 async def lifespan(app):
     store = Store()
@@ -186,6 +232,11 @@ async def lifespan(app):
         app.state.mcp_authorization = ("Bearer " + store.token(create=True)).encode("ascii")
         app.state.sync_key = store.token(create=True, sync=True).encode("ascii")
         app.state.remote_sync_key = store.remote_sync_token(create=True).encode("ascii")
+        app.state.capture_key = store.read_token(
+            store.root / CAPTURE_TOKEN_FILE, create=True
+        ).encode("ascii")
+        app.state.captures = Captures(store.root / "captured-pages.sqlite3")
+        app.state.captures.initialize()
         store.legacy_credentials_path.unlink(missing_ok=True)
         async with async_playwright() as playwright:
             chrome = Chrome(playwright, store.root)
@@ -218,6 +269,7 @@ app = Starlette(
         Route("/healthz", health),
         Route("/cookie-sync", cookie_sync, methods=["GET", "POST", "DELETE"]),
         Route("/remote-cookie-sync", cookie_sync, methods=["POST", "DELETE"]),
+        Route("/page-capture", page_capture, methods=["POST"]),
         Mount("/", app=RequireMCPToken(mcp.streamable_http_app())),
     ],
     lifespan=lifespan,
