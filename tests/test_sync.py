@@ -1,6 +1,7 @@
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import time
 from types import SimpleNamespace
 
 from starlette.applications import Starlette
@@ -52,9 +53,21 @@ class CookieSyncTests(unittest.TestCase):
         self.client.delete(remote, headers=headers).raise_for_status()
         self.assertIsNone(self.store.cookie_config())
 
-    def test_remote_sync_retries_after_stale_session_pause(self):
-        self.store.set_hold(Hold("manual_verification", "old pause"))
+    def test_remote_sync_preserves_site_access_pauses(self):
         headers = {"Origin": ORIGIN, "Authorization": "Bearer remote-fixture"}
-        response = self.client.post("/remote-cookie-sync", json=self.cookies, headers=headers)
-        self.assertEqual(response.status_code, 200)
-        self.assertIsNone(self.store.hold())
+        for hold in (
+            Hold("manual_verification", "verification required"),
+            Hold("site_blocked", "access denied"),
+            Hold("rate_limited", "retry later", time() + 120),
+        ):
+            with self.subTest(hold=hold.code):
+                self.store.set_hold(hold)
+                for value in (hold.code, hold.code, hold.code + "-updated"):
+                    response = self.client.post(
+                        "/remote-cookie-sync",
+                        json=[{"name": "_t", "value": value}],
+                        headers=headers,
+                    )
+                    self.assertEqual(response.status_code, 200)
+                    self.assertEqual(self.store.cookie_config().cookies[0]["value"], value)
+                    self.assertEqual(self.store.hold(), hold)

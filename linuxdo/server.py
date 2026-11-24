@@ -173,10 +173,6 @@ async def cookie_sync(request):
     except (ValueError, RecursionError):
         return JSONResponse({"error": "invalid_cookies"}, 422)
     state.session.store.configure(cookies, source=source)
-    if remote:
-        hold = state.session.store.hold()
-        if hold and hold.code in {"cookies_expired", "manual_verification"}:
-            state.session.store.clear_hold()
     return JSONResponse({"state": state.session.status()["state"]}, headers={"Cache-Control": "no-store"})
 
 
