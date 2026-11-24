@@ -3,3 +3,7 @@ __pycache__/
 .env
 .venv/
 .secrets/
+target/
+.pi/
+.pytest_cache/
+.ruff_cache/

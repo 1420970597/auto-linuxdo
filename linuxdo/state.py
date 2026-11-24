@@ -2,6 +2,7 @@ import fcntl
 import json
 import os
 import secrets
+import shutil
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -105,7 +106,31 @@ class Store:
                 self.cookies_path.unlink()
             except FileNotFoundError:
                 return False
+            # Account-scoped holds outlive the cookies they described; dropping them keeps
+            # `resume` usable after the session is removed in the browser.
+            hold = self.hold()
+            if hold and hold.generation is not None:
+                self.clear_hold()
             return True
+
+    def discard_retired_files(self) -> None:
+        """Removes what the retired Chrome transport left behind."""
+        for name in ("chrome-generation", "page-capture-token", "captured-pages.sqlite3"):
+            (self.root / name).unlink(missing_ok=True)
+        shutil.rmtree(self.root / "chrome", ignore_errors=True)
+
+    def discard_retired_state(self) -> None:
+        """Retired files plus the hold that only the retired transport could raise.
+
+        Its `manual_verification` hold meant "a browser cannot pass this", which the
+        `forum-fetch` transport now answers by solving the challenge; keeping the hold would
+        block every read after an upgrade until someone ran `resume`. V2EX still raises that
+        code, so its store only runs [`discard_retired_files`](Self.discard_retired_files).
+        """
+        self.discard_retired_files()
+        hold = self.hold()
+        if hold and hold.code == "manual_verification" and hold.generation is None:
+            self.clear_hold()
 
     def token(self, *, create: bool = False, sync: bool = False) -> str:
         path = self.sync_token_path if sync else self.token_path

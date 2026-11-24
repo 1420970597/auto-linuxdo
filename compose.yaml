@@ -12,13 +12,9 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
-      - seccomp=deploy/chrome-seccomp.json
-    shm_size: 256m
     tmpfs:
       - /tmp:mode=1777
     environment:
-      XDG_CONFIG_HOME: /tmp/chrome-config
-      XDG_CACHE_HOME: /tmp/chrome-cache
       LINUXDO_REFRESH_SECONDS: ${LINUXDO_REFRESH_SECONDS:-7200}
     ports:
       - "127.0.0.1:${LINUXDO_PORT:-8765}:8765"

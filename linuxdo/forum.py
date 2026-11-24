@@ -1,77 +1,157 @@
-import re
-from urllib.parse import urlencode, urlsplit
+"""Linux.do reading through Discourse's JSON endpoints."""
 
-from linuxdo.browser import Navigator, same_origin
+import json
+from time import time
+from urllib.parse import urlencode
+
+from linuxdo.fetch import Fetch, Response
+from linuxdo.html import text as html_text
 from linuxdo.state import ForumError
 
-LATEST_LINKS = ".topic-list-item .main-link a.raw-topic-link, .topic-list-item .main-link a.title"
-SEARCH_LINKS = ".fps-result a.search-link, .search-results a.search-link"
-EMPTY_SEARCH = ".no-results-container, .search-results .no-results, .no-search-results"
-INVALID_SEARCH = ".search-notice .fps-invalid"
-POSTS = "article[data-post-id] .cooked"
-TOPIC_PATH = re.compile(r"^/t/(?:(?![0-9]+/)[^/]+/)?([1-9][0-9]{0,9})(?:/[1-9][0-9]{0,9})?/?$")
+ORIGIN = "https://linux.do"
+LATEST = "/latest.json"
+SEARCH = "/search.json?"
+CURRENT_USER = "/session/current.json"
+TEXT_LIMIT = 12_000
+RATE_LIMIT_SECONDS = 900
 
 
-async def topic_links(nav: Navigator, selector: str, limit: int) -> list[dict]:
-    links = await nav.page.locator(selector).evaluate_all(
-        """(elements) => elements.filter(link => link.getClientRects().length).slice(0, 100)
-           .map(link => ({title: link.innerText.trim().slice(0, 300), url: link.href}))"""
-    )
-    topics = {}
-    for link in links:
-        url = link["url"]
-        path = urlsplit(url).path
-        match = TOPIC_PATH.fullmatch(path)
-        if not (match and link["title"] and same_origin(url, nav.origin)):
-            continue
-        topic_id = int(match[1])
-        topics.setdefault(topic_id, {"topic_id": topic_id, "title": link["title"], "url": nav.origin + path})
+def topic_entry(topic: dict) -> dict | None:
+    topic_id = topic.get("id")
+    if type(topic_id) is not int or topic_id < 1:
+        return None
+    title = topic.get("title") or topic.get("fancy_title") or ""
+    if not isinstance(title, str) or not title.strip():
+        return None
+    return {
+        "topic_id": topic_id,
+        "title": title.strip()[:300],
+        "url": f"{ORIGIN}/t/topic/{topic_id}",
+    }
+
+
+def topics_from(payload: dict, limit: int) -> list[dict]:
+    topics = []
+    seen = set()
+    for topic in payload.get("topic_list", {}).get("topics", []):
+        entry = topic_entry(topic) if isinstance(topic, dict) else None
+        if entry and entry["topic_id"] not in seen:
+            seen.add(entry["topic_id"])
+            topics.append(entry)
         if len(topics) == limit:
             break
-    return list(topics.values())
+    return topics
 
 
-async def latest(nav: Navigator, limit: int) -> dict:
-    await nav.wait(f"{LATEST_LINKS}, .topic-list .empty-topic-list, .empty-topic-list")
-    return {"topics": await topic_links(nav, LATEST_LINKS, limit)}
+def search_results(payload: dict, limit: int) -> list[dict]:
+    """Search matches are posts; keep the topics they belong to, in result order."""
+    titles = {}
+    for topic in payload.get("topics", []):
+        if isinstance(topic, dict) and type(topic.get("id")) is int:
+            titles[topic["id"]] = topic.get("title") or topic.get("fancy_title") or ""
+
+    order = []
+    for post in payload.get("posts", []):
+        if isinstance(post, dict):
+            order.append(post.get("topic_id"))
+    for topic in payload.get("topics", []):
+        if isinstance(topic, dict):
+            order.append(topic.get("id"))
+
+    topics = []
+    seen = set()
+    for topic_id in order:
+        if type(topic_id) is not int or topic_id < 1 or topic_id in seen:
+            continue
+        title = (titles.get(topic_id) or "").strip()
+        if not title:
+            continue
+        seen.add(topic_id)
+        topics.append({
+            "topic_id": topic_id,
+            "title": title[:300],
+            "url": f"{ORIGIN}/t/topic/{topic_id}",
+        })
+        if len(topics) == limit:
+            break
+    return topics
 
 
-async def search(nav: Navigator, query: str, limit: int) -> dict:
-    await nav.wait(f"{SEARCH_LINKS}, {EMPTY_SEARCH}, {INVALID_SEARCH}")
-    if await nav.visible(INVALID_SEARCH).is_visible():
-        raise ForumError("query_rejected", "论坛未接受这个搜索词，请使用更具体的关键词。")
-    return {"query": query, "topics": await topic_links(nav, SEARCH_LINKS, limit)}
-
-
-def search_path(query: str) -> str:
-    return "/search?" + urlencode({"q": query})
-
-
-async def read_topic(nav: Navigator, topic_id: int, limit: int, post_number: int) -> dict:
-    target = f"article:is(#post_{post_number}, #post-{post_number})[data-post-id] .cooked"
-    await nav.wait(target)
-    topic_path = urlsplit(nav.page.url).path
-    match = TOPIC_PATH.fullmatch(topic_path)
-    if not match or int(match[1]) != topic_id:
-        raise ForumError("unexpected_topic", "论坛返回了其他主题。")
-    title = await nav.visible(
-        f"h1[data-topic-id='{topic_id}'] a.fancy-title, #topic-title h1, h1.fancy-title"
-    ).inner_text()
-    posts = await nav.page.locator(POSTS).evaluate_all(
-        """(elements, {topicId, firstPost, limit}) => elements.flatMap(element => {
-            const article = element.closest("article[data-post-id]");
-            const number = article.id.match(/^post[_-](\\d+)$/)?.[1];
-            if (!number || Number(number) < firstPost || article.dataset.topicId !== topicId) return [];
-            if (!element.getClientRects().length) return [];
-            const text = element.innerText.trim();
-            if (!text) return [];
-            return [{post_number: Number(number), text: text.slice(0, 12000), truncated: text.length > 12000}];
-        }).slice(0, limit)""",
-        {"topicId": str(topic_id), "firstPost": post_number, "limit": limit},
-    )
+def topic_posts(payload: dict, topic_id: int, limit: int, post_number: int) -> dict:
+    topic = payload.get("post_stream", {})
+    posts = []
+    for post in topic.get("posts", []):
+        if not isinstance(post, dict):
+            continue
+        number = post.get("post_number")
+        if type(number) is not int or number < post_number:
+            continue
+        body = html_text(post.get("cooked") or "")
+        if not body:
+            continue
+        posts.append({
+            "post_number": number,
+            "text": body[:TEXT_LIMIT],
+            "truncated": len(body) > TEXT_LIMIT,
+        })
+        if len(posts) == limit:
+            break
     if not posts:
         raise ForumError("page_unrecognized", "未找到可识别的论坛帖子。")
-    canonical = f"{nav.origin}/t/topic/{topic_id}"
+    title = payload.get("title") or payload.get("fancy_title") or ""
+    canonical = f"{ORIGIN}/t/topic/{topic_id}"
     for post in posts:
         post["url"] = f'{canonical}/{post["post_number"]}'
-    return {"topic_id": topic_id, "title": title.strip()[:300], "url": canonical, "posts": posts}
+    return {
+        "topic_id": topic_id,
+        "title": str(title).strip()[:300],
+        "url": canonical,
+        "posts": posts,
+    }
+
+
+def decode(response: Response, what: str) -> dict:
+    if response.status == 429:
+        raise ForumError("rate_limited", "论坛暂时限流。", time() + RATE_LIMIT_SECONDS)
+    if response.status in (401, 403) and "not_logged_in" in response.text:
+        raise ForumError("signed_out", "论坛会话已失效。")
+    if response.status == 403:
+        raise ForumError("site_blocked", "论坛返回 HTTP 403，访问已暂停。")
+    if response.status == 404:
+        raise ForumError("not_found", f"论坛没有找到{what}。")
+    if response.status >= 400:
+        raise ForumError("site_unavailable", f"论坛{what}返回 HTTP {response.status}。")
+    try:
+        payload = json.loads(response.text)
+    except ValueError:
+        raise ForumError("page_unrecognized", f"论坛{what}返回了无法识别的内容。") from None
+    if not isinstance(payload, dict):
+        raise ForumError("page_unrecognized", f"论坛{what}返回了无法识别的内容。")
+    return payload
+
+
+async def latest(fetch: Fetch, limit: int, cookies: dict[str, str]) -> dict:
+    response = await fetch.get(ORIGIN + LATEST, cookies=cookies)
+    return {"topics": topics_from(decode(response, "主题列表"), limit)}
+
+
+async def search(fetch: Fetch, query: str, limit: int, cookies: dict[str, str]) -> dict:
+    response = await fetch.get(ORIGIN + SEARCH + urlencode({"q": query}), cookies=cookies)
+    return {"query": query, "topics": search_results(decode(response, "搜索结果"), limit)}
+
+
+async def read_topic(
+    fetch: Fetch, topic_id: int, limit: int, post_number: int, cookies: dict[str, str]
+) -> dict:
+    path = f"/t/{topic_id}/{post_number}.json" if post_number > 1 else f"/t/{topic_id}.json"
+    response = await fetch.get(ORIGIN + path, cookies=cookies)
+    return topic_posts(decode(response, "主题"), topic_id, limit, post_number)
+
+
+async def signed_in(fetch: Fetch, cookies: dict[str, str]) -> bool:
+    response = await fetch.get(ORIGIN + CURRENT_USER, cookies=cookies)
+    if response.status == 429:
+        raise ForumError("rate_limited", "论坛暂时限流。", time() + RATE_LIMIT_SECONDS)
+    if response.status == 403:
+        raise ForumError("site_blocked", "论坛返回 HTTP 403，访问已暂停。")
+    return response.status == 200

@@ -23,7 +23,7 @@ def main() -> None:
     origin = f"https://{args.ip}:{args.port}"
     manifest = json.loads(ASSETS.joinpath("manifest.json").read_text(encoding="utf-8"))
     manifest["host_permissions"] = [f"https://{args.ip}/*"]
-    config = {"url": origin + "/cookie-sync", "key": Store().remote_sync_token()}
+    config = {"url": origin + "/cookie-sync", "key": Store().remote_sync_token(create=True)}
     with ZipFile(sys.stdout.buffer, "w", ZIP_DEFLATED) as archive:
         archive.writestr("extension/manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
         archive.writestr("extension/connection.js", "export default " + json.dumps(config) + ";\n")

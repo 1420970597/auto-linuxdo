@@ -1,0 +1,13 @@
+[workspace]
+members = ["rust/forum-fetch"]
+resolver = "3"
+
+# cfsolve ships patched dependencies; Cargo only reads patches from the workspace root.
+[patch.crates-io]
+btls-sys = { path = "vendor/cfsolve/vendor/btls-sys" }
+wreq = { path = "vendor/cfsolve/vendor/wreq" }
+http2 = { path = "vendor/cfsolve/vendor/http2" }
+
+[profile.release]
+codegen-units = 1
+strip = "debuginfo"

@@ -9,7 +9,7 @@ from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from linuxdo.server import cookie_sync
-from linuxdo.state import Hold, Store
+from linuxdo.state import CookieConfig, Hold, Store
 
 ORIGIN = "chrome-extension://" + "a" * 32
 
@@ -28,6 +28,16 @@ class CookieSyncTests(unittest.TestCase):
         self.client = self.enterContext(TestClient(app, base_url="http://127.0.0.1:8765"))
         self.cookies = [{"name": "_t", "value": "forum-fixture"}]
 
+    def config(self) -> CookieConfig:
+        config = self.store.cookie_config()
+        assert config is not None
+        return config
+
+    def hold(self) -> Hold:
+        hold = self.store.hold()
+        assert hold is not None
+        return hold
+
     def test_remote_sync_requires_extension_origin_and_separate_key(self):
         remote = "/remote-cookie-sync"
         auth = {"Authorization": "Bearer remote-fixture"}
@@ -41,17 +51,30 @@ class CookieSyncTests(unittest.TestCase):
         self.assertEqual(reply.status_code, 200)
         self.assertEqual(reply.json(), {"state": "pending"})
         self.assertEqual(reply.headers["cache-control"], "no-store")
-        self.assertEqual(self.store.cookie_config().source, "remote-browser")
+        self.assertEqual(self.config().source, "remote-browser")
 
     def test_remote_logout_does_not_delete_a_manually_imported_session(self):
         self.store.configure(self.cookies)
         remote = "/remote-cookie-sync"
         headers = {"Origin": ORIGIN, "Authorization": "Bearer remote-fixture"}
         self.assertEqual(self.client.delete(remote, headers=headers).status_code, 200)
-        self.assertEqual(self.store.cookie_config().source, "manual")
+        self.assertEqual(self.config().source, "manual")
         self.client.post(remote, json=self.cookies, headers=headers).raise_for_status()
         self.client.delete(remote, headers=headers).raise_for_status()
         self.assertIsNone(self.store.cookie_config())
+
+    def test_forget_drops_hold_that_described_the_session(self):
+        self.store.configure(self.cookies)
+        generation = self.config().generation
+        self.store.set_hold(Hold("cookies_expired", "expired", generation=generation))
+        self.store.forget()
+        self.assertIsNone(self.store.hold())
+
+    def test_forget_keeps_site_wide_hold(self):
+        self.store.configure(self.cookies)
+        self.store.set_hold(Hold("site_blocked", "access denied"))
+        self.store.forget()
+        self.assertEqual(self.hold().code, "site_blocked")
 
     def test_remote_sync_preserves_site_access_pauses(self):
         headers = {"Origin": ORIGIN, "Authorization": "Bearer remote-fixture"}
@@ -69,5 +92,5 @@ class CookieSyncTests(unittest.TestCase):
                         headers=headers,
                     )
                     self.assertEqual(response.status_code, 200)
-                    self.assertEqual(self.store.cookie_config().cookies[0]["value"], value)
+                    self.assertEqual(self.config().cookies[0]["value"], value)
                     self.assertEqual(self.store.hold(), hold)

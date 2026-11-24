@@ -5,7 +5,7 @@ from time import time
 
 from linuxdo.cookies import MAX_IMPORT_BYTES, parse_cookie_input
 from linuxdo.state import Store
-from linuxdo.v2ex import TOKEN_FILE, configure_token
+from linuxdo.v2ex import TOKEN_FILENAME, configure_token
 
 
 def main() -> None:
@@ -43,12 +43,12 @@ def main() -> None:
                 token = sys.stdin.buffer.read(1025).decode("ascii")
             if len(token) > 1024:
                 raise ValueError
-            configure_token(store.root / TOKEN_FILE, token.strip())
+            configure_token(store.root / TOKEN_FILENAME, token.strip())
         except ValueError:
             parser.error("请提供有效的 V2EX 个人访问令牌。")
         print("已保存 V2EX 个人访问令牌。")
     elif args.command == "v2ex-forget":
-        (store.root / TOKEN_FILE).unlink(missing_ok=True)
+        (store.root / TOKEN_FILENAME).unlink(missing_ok=True)
         print("V2EX 令牌已移除，将使用公开网页。")
     else:
         hold = store.hold()
