@@ -13,19 +13,29 @@ docker compose exec -T linuxdo python -m linuxdo.admin token
 
 将 AI 客户端的传输方式设为 **Streamable HTTP**，地址填 `http://127.0.0.1:8765/mcp`，请求头填 `Authorization: Bearer <token 命令输出>`。这个密钥供 AI 客户端读取论坛内容。
 
-## 从 Chrome 自动同步
+## 从 Chrome 同步
 
-1. 在自己的 Chrome 登录 Linux.do。打开 `chrome://extensions`，开启开发者模式，选择「加载已解压的扩展程序」，选择项目中的 `extension` 文件夹。
-2. 在 Docker 所在机器运行 `docker compose exec -T linuxdo python -m linuxdo.admin sync-token`。打开 Chrome 工具栏的「Linux.do 会话同步」，粘贴独立同步密钥，确认端口，点击「开启自动同步」，再授予 Linux.do 访问权限。
-3. 扩展会在 Cookie 更新时同步，每分钟也会检查一次。源浏览器退出论坛后，下一次检查会清除由扩展配置的本机会话。扩展面板和 MCP 的 `forum_status` 可查看同步与登录状态。
+在自己的 Chrome 登录 Linux.do，解压服务器生成的专用扩展 ZIP，再打开 `chrome://extensions`，开启开发者模式并加载解压后的 `extension` 文件夹。打开「Linux.do 会话同步」并点击「同步」。首次点击时 Chrome 会请求 Linux.do 权限。启用后，扩展会在 Cookie 变化时同步，并每分钟检查一次。浏览器退出论坛后，服务器会清除由这版扩展同步的会话。
 
-扩展只读取 Linux.do 主域的 `_t` 会话 Cookie。它先用同步密钥验证回环地址上的目标服务，再发送 Cookie。配对信息保存在当前 Chrome 扩展的本地存储，Cookie 留在 Chrome 原有存储中。同步密钥与 MCP 读取密钥分开使用。
+扩展内置 HTTPS 地址和专用连接码，只同步 Linux.do 主域的 `_t`。服务器通过专用端口对外提供 Cookie 同步入口，MCP 使用本机端口。ZIP 含连接码，请仅通过私有渠道交付。
 
-浏览器和 Docker 在不同机器时，可运行 `ssh -N -L 8765:127.0.0.1:8765 <Docker 主机>`，并让扩展继续连接浏览器机器的回环地址。
+### 在服务器上部署并生成专用扩展
+
+1. 将 [Nginx 配置示例](deploy/nginx-sync-acme.conf.example)中的 IP 改为服务器公网 IPv4，安装到现有 Nginx 的 `conf.d`，运行 `nginx -t` 并重载。该配置将该公网 IP 上的 HTTP-01 证书验证转给 Caddy。
+2. 用下列命令部署 Caddy 和服务，然后生成解压即用的扩展包。把示例 IP 换成实际公网 IPv4，公开 TCP 端口 `80` 和 `8443`，并保留 Docker 的 `sync_tls` 卷供 Caddy 自动续签。
+
+```bash
+export LINUXDO_SYNC_IP=152.53.126.151
+docker compose -f compose.yaml -f compose.remote-sync.yaml up -d --build --wait
+umask 077
+docker compose exec -T linuxdo python -m linuxdo.package_extension "$LINUXDO_SYNC_IP" > linuxdo-sync-private.zip
+```
+
+证书取得后，可以用 `curl -i "https://$LINUXDO_SYNC_IP:8443/cookie-sync"` 检查 HTTPS。未认证的 GET 应返回 404。只有通过认证的扩展 POST 或 DELETE 请求可以更新会话。
 
 ### 手动导入
 
-暂停自动同步后，可以通过终端粘贴当前账号的 Cookie 请求头。也可以从标准输入导入请求头、Cookie JSON 数组或包含 `cookies` 数组的 JSON 文件，文件格式可使用 Playwright storage state。
+停用扩展后，可以通过终端粘贴当前账号的 Cookie 请求头。也可以从标准输入导入请求头、Cookie JSON 数组或包含 `cookies` 数组的 JSON 文件，文件格式可使用 Playwright storage state。
 
 ```bash
 docker compose exec linuxdo python -m linuxdo.admin configure
@@ -66,7 +76,7 @@ docker compose exec linuxdo python -m linuxdo.admin v2ex-configure
 ## 会话与运行状态
 
 - Chrome 会保存论坛通过正常浏览更新的 Cookie。服务默认每 7200 秒检查会话，读取时也会检查。可用 `LINUXDO_REFRESH_SECONDS` 调整间隔，最短 900 秒。会话被论坛撤销或到期时，需在自己的 Chrome 重新登录，扩展随后会同步新 Cookie，也可手动重新导入。
-- 导入的 Cookie 和 Chrome 配置保存在 Docker 命名卷中，Cookie 配置文件和两个密钥文件权限为 `0600`。升级时服务会删除旧账号密码文件。暂停扩展会解除配对。清除服务会话可运行 `docker compose exec linuxdo python -m linuxdo.admin forget`。
+- 导入的 Cookie 和 Chrome 配置保存在 Docker 命名卷中，Cookie 配置文件和密钥文件权限为 `0600`。升级时服务会删除旧账号密码文件。清除服务会话可运行 `docker compose exec linuxdo python -m linuxdo.admin forget`。
 - 论坛发出验证码、二次验证、访问拒绝或限流时，服务暂停并记录原因。重新同步 Cookie 不会解除站点暂停。限流遵守 `Retry-After`。站点限制解除后，运行 `docker compose exec linuxdo python -m linuxdo.admin resume` 恢复检查。
 - MCP 默认只监听宿主机回环地址，端口可用 `LINUXDO_PORT` 修改。健康检查使用 `/healthz`。需要更新 Chrome 和系统包时，用 `docker compose build --pull --no-cache` 重建，再用 `docker compose up -d --wait` 更新服务。
 

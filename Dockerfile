@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY deploy/chrome-policy.json /etc/opt/chrome/policies/managed/linuxdo.json
 COPY linuxdo ./linuxdo
+COPY extension ./extension
 USER 10001:10001
 EXPOSE 8765
 CMD ["uvicorn", "linuxdo.server:app", "--host", "0.0.0.0", "--port", "8765", "--no-access-log", "--timeout-graceful-shutdown", "10"]

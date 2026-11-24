@@ -134,11 +134,12 @@ async def health(request):
 
 async def cookie_sync(request):
     state = request.app.state
+    remote = request.url.path == "/remote-cookie-sync"
     host = request.headers.get("host", "")
     origin = request.headers.get("origin")
     if not re.fullmatch(r"(127\.0\.0\.1|localhost)(:[0-9]+)?", host):
         return JSONResponse({"error": "forbidden"}, 403)
-    if origin and not re.fullmatch(r"chrome-extension://[a-p]{32}", origin):
+    if (remote or origin) and not re.fullmatch(r"chrome-extension://[a-p]{32}", origin or ""):
         return JSONResponse({"error": "forbidden"}, 403)
     if request.method == "GET":
         challenge = request.query_params.get("challenge", "")
@@ -148,12 +149,14 @@ async def cookie_sync(request):
         return JSONResponse({"proof": proof.hex()}, headers={"Cache-Control": "no-store"})
 
     provided = request.headers.get("authorization", "").encode("latin-1")
-    if not secrets.compare_digest(provided, b"Bearer " + state.sync_key):
+    key = state.remote_sync_key if remote else state.sync_key
+    source = "remote-browser" if remote else "browser"
+    if not secrets.compare_digest(provided, b"Bearer " + key):
         return JSONResponse({"error": "unauthorized"}, 401, headers={"WWW-Authenticate": "Bearer"})
 
     if request.method == "DELETE":
         try:
-            state.session.store.forget(source="browser")
+            state.session.store.forget(source=source)
         except ForumError:
             return JSONResponse({"error": "invalid_config"}, 422)
         return JSONResponse({"state": "signed_out"})
@@ -169,8 +172,8 @@ async def cookie_sync(request):
         cookies = normalize_cookies(json.loads(body))
     except (ValueError, RecursionError):
         return JSONResponse({"error": "invalid_cookies"}, 422)
-    state.session.store.configure(cookies, source="browser")
-    return JSONResponse({"state": state.session.status()["state"]})
+    state.session.store.configure(cookies, source=source)
+    return JSONResponse({"state": state.session.status()["state"]}, headers={"Cache-Control": "no-store"})
 
 
 @asynccontextmanager
@@ -182,6 +185,7 @@ async def lifespan(app):
     with store.service_lock():
         app.state.mcp_authorization = ("Bearer " + store.token(create=True)).encode("ascii")
         app.state.sync_key = store.token(create=True, sync=True).encode("ascii")
+        app.state.remote_sync_key = store.remote_sync_token(create=True).encode("ascii")
         store.legacy_credentials_path.unlink(missing_ok=True)
         async with async_playwright() as playwright:
             chrome = Chrome(playwright, store.root)
@@ -213,6 +217,7 @@ app = Starlette(
     routes=[
         Route("/healthz", health),
         Route("/cookie-sync", cookie_sync, methods=["GET", "POST", "DELETE"]),
+        Route("/remote-cookie-sync", cookie_sync, methods=["POST", "DELETE"]),
         Mount("/", app=RequireMCPToken(mcp.streamable_http_app())),
     ],
     lifespan=lifespan,

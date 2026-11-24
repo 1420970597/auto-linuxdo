@@ -61,6 +61,7 @@ class Store:
         self.hold_path = root / "forum-hold.json"
         self.token_path = root / "mcp-token"
         self.sync_token_path = root / "cookie-sync-token"
+        self.remote_sync_token_path = root / "remote-cookie-sync-token"
 
     @contextmanager
     def service_lock(self):
@@ -108,6 +109,13 @@ class Store:
 
     def token(self, *, create: bool = False, sync: bool = False) -> str:
         path = self.sync_token_path if sync else self.token_path
+        return self.read_token(path, create=create)
+
+    def remote_sync_token(self, *, create: bool = False) -> str:
+        return self.read_token(self.remote_sync_token_path, create=create)
+
+    @staticmethod
+    def read_token(path: Path, *, create: bool) -> str:
         if create and not path.exists():
             write_private(path, secrets.token_urlsafe(32))
         return path.read_text(encoding="utf-8")

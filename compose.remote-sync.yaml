@@ -1,0 +1,22 @@
+services:
+  sync-gateway:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      LINUXDO_SYNC_IP: ${LINUXDO_SYNC_IP:?set the public IPv4 address}
+    ports:
+      - "${LINUXDO_SYNC_IP}:8443:8443"
+      - "127.0.0.1:8766:8080"
+    volumes:
+      - ./deploy/Caddyfile.sync:/etc/caddy/Caddyfile:ro
+      - sync_tls:/data
+      - sync_config:/config
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  sync_tls:
+  sync_config:

@@ -1,0 +1,43 @@
+{
+	admin off
+	auto_https disable_redirects
+	http_port 8080
+	default_sni {$LINUXDO_SYNC_IP}
+	servers :8443 {
+		protocols h1 h2
+		timeouts {
+			read_header 5s
+			read_body 10s
+		}
+	}
+}
+
+https://{$LINUXDO_SYNC_IP}:8443 {
+	tls {
+		issuer acme https://acme-v02.api.letsencrypt.org/directory {
+			profile shortlived
+			disable_tlsalpn_challenge
+		}
+	}
+
+	@sync {
+		method POST DELETE
+		path /cookie-sync
+	}
+	handle @sync {
+		request_body {
+			max_size 16KB
+		}
+		reverse_proxy linuxdo:8765 {
+			rewrite /remote-cookie-sync
+			header_up Host 127.0.0.1:8765
+		}
+	}
+	handle {
+		respond 404
+	}
+}
+
+http://:8080 {
+	respond 404
+}
