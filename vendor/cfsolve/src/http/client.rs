@@ -10,7 +10,7 @@ use bytes::Bytes;
 use serde::Deserialize;
 use url::Url;
 use wreq::cookie::{Cookie, Jar};
-use wreq::header::HeaderMap;
+use wreq::header::{HeaderMap, HeaderName, HeaderValue};
 use wreq::http2::{StreamDependency, StreamId};
 use wreq::redirect::Policy;
 use wreq::tls::trust::CertStore;
@@ -177,8 +177,31 @@ impl BrowserClient {
         kind: RequestKind,
         supplied: &[(&str, Option<&str>)],
     ) -> Result<Response, wreq::Error> {
+        self.send_with(request, kind, supplied, &[]).await
+    }
+
+    /// [`Self::send`] with caller-supplied headers appended after the profile's order, so a
+    /// site that needs its own header (an `authorization` token, for instance) still travels
+    /// on the profile's TLS and HTTP/2 fingerprint. Entries that do not parse as an HTTP field
+    /// are skipped; the caller validates them for its own error message.
+    pub(super) async fn send_with(
+        &self,
+        request: RequestBuilder,
+        kind: RequestKind,
+        supplied: &[(&str, Option<&str>)],
+        extra: &[(&str, &str)],
+    ) -> Result<Response, wreq::Error> {
         let (http, request) = self.ordered(request, kind, supplied).build_split();
         let mut request = request?;
+        for (name, value) in extra {
+            let (Ok(name), Ok(value)) = (
+                HeaderName::from_bytes(name.as_bytes()),
+                HeaderValue::from_bytes(value.as_bytes()),
+            ) else {
+                continue;
+            };
+            request.headers_mut().insert(name, value);
+        }
         let urgency = request
             .headers()
             .get("priority")

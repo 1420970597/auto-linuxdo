@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use url::Url;
 use url::form_urlencoded::Serializer;
 use wreq::cookie::Jar;
-use wreq::header::LOCATION;
+use wreq::header::{HeaderMap, LOCATION};
 use wreq::redirect::Policy;
 use wreq::ws::WebSocket;
 use wreq::{Response, StatusCode};
@@ -53,6 +53,9 @@ pub struct PageDocument {
     pub url: Url,
     pub status: StatusCode,
     pub html: String,
+    /// Response headers, for callers that need `retry-after`, `cf-mitigated`, or a content type.
+    /// Empty for documents assembled by a solver rather than fetched.
+    pub headers: HeaderMap,
     /// Referrer policy applied to the page's outgoing requests.
     pub(crate) referrer_policy: ReferrerPolicy,
 }
@@ -66,28 +69,42 @@ impl PageDocument {
             url,
             status,
             html,
+            headers: HeaderMap::new(),
         }
     }
 
     async fn read(response: Response) -> Result<Self> {
         let url = Url::parse(&response.uri().to_string())?;
         let status = response.status();
+        let headers = response.headers().clone();
         let header = response
             .headers()
             .get("referrer-policy")
             .map(decode::header_text);
         let html = response.text().await?;
-        Ok(Self::new(url, status, html, header.as_deref()))
+        let mut document = Self::new(url, status, html, header.as_deref());
+        document.headers = headers;
+        Ok(document)
     }
 }
 
 /// Navigates as if the user typed an address. Retries once if `Critical-CH` requires
 /// high-entropy client hints and the profile supports that retry.
 pub async fn navigate(client: &BrowserClient, url: &Url) -> Result<PageDocument> {
+    navigate_with(client, url, &[]).await
+}
+
+/// [`navigate`] with site-specific headers, such as an API's `authorization` token. They are
+/// appended after the profile's ordered headers and replace any of the same name.
+pub async fn navigate_with(
+    client: &BrowserClient,
+    url: &Url,
+    extra: &[(&str, &str)],
+) -> Result<PageDocument> {
     let navigation = async |kind| {
         let request = client.http.get(url.as_str());
         client
-            .send(request, kind, &[])
+            .send_with(request, kind, &[], extra)
             .await
             .context("navigating to the page")
     };

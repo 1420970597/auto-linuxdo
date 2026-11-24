@@ -33,6 +33,21 @@ class FetchTests(unittest.IsolatedAsyncioTestCase):
         jar = json.loads((self.store / "cf-cookies.json").read_text())
         self.assertEqual(jar, {"cf_clearance": "fresh"})
 
+    async def test_extra_headers_reach_the_binary_as_a_private_file(self):
+        fetch = self.transport(
+            'printf %s \'{"url":"https://linux.do/u.json","status":200,"html":"{}",'
+            '"headers":{"Content-Type":"application/json"}}\'\n'
+        )
+        response = await fetch.get(
+            "https://linux.do/u.json", headers={"Authorization": "Bearer token"}
+        )
+        self.assertEqual(response.headers, {"content-type": "application/json"})
+        self.assertEqual(
+            json.loads((self.store / "fetch-headers.json").read_text()),
+            {"authorization": "Bearer token"},
+        )
+        self.assertEqual((self.store / "fetch-headers.json").stat().st_mode & 0o777, 0o600)
+
     async def test_error_payload_maps_to_a_site_hold(self):
         fetch = self.transport('printf %s \'{"error":"Cloudflare challenge could not be cleared"}\'\n')
         with self.assertRaises(ForumError) as caught:

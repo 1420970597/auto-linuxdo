@@ -7,16 +7,16 @@
 //! written back to the same file so a `cf_clearance` cookie can be reused across processes.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cfsolve::fingerprint::Transport;
-use cfsolve::http::{PageDocument, navigate};
+use cfsolve::http::{PageDocument, navigate_with};
 use cfsolve::{Browser, Options};
 use serde::Serialize;
 use url::Url;
 
-const USAGE: &str = "usage: forum-fetch --profile <file> --url <url> [--cookie-file <file>] [--proxy <url>]";
+const USAGE: &str = "usage: forum-fetch --profile <file> --url <url> [--cookie-file <file>] [--proxy <url>] [--header-file <json>]";
 
 #[derive(Serialize)]
 struct Output {
@@ -24,6 +24,7 @@ struct Output {
     status: u16,
     html: String,
     cookies: BTreeMap<String, String>,
+    headers: BTreeMap<String, String>,
     solved: bool,
 }
 
@@ -32,6 +33,35 @@ struct Args {
     url: Url,
     cookie_file: Option<PathBuf>,
     proxy: Option<String>,
+    headers: Vec<(String, String)>,
+}
+
+/// Validates one header, so a caller cannot inject a second line into the request.
+fn check_header(name: &str, value: &str) -> Result<(), String> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| matches!(byte, b'!'..=b'9' | b';'..=b'~'))
+        || value.bytes().any(|byte| matches!(byte, b'\r' | b'\n'))
+    {
+        return Err(format!("invalid header: {name}"));
+    }
+    Ok(())
+}
+
+/// Headers arrive in a file rather than on the command line so a token never shows up in `ps`.
+fn read_headers(path: &Path) -> Result<Vec<(String, String)>, String> {
+    let text = std::fs::read_to_string(path).map_err(|error| format!("--header-file: {error}"))?;
+    let headers: BTreeMap<String, String> = serde_json::from_str(&text)
+        .map_err(|error| format!("--header-file needs a JSON object of strings: {error}"))?;
+    headers
+        .into_iter()
+        .map(|(name, value)| {
+            let name = name.trim().to_ascii_lowercase();
+            check_header(&name, &value)?;
+            Ok((name, value))
+        })
+        .collect()
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -39,6 +69,7 @@ fn parse_args() -> Result<Args, String> {
     let mut url = None;
     let mut cookie_file = None;
     let mut proxy = None;
+    let mut headers = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{flag} needs a value"));
@@ -50,6 +81,10 @@ fn parse_args() -> Result<Args, String> {
             }
             "--cookie-file" => cookie_file = Some(PathBuf::from(value()?)),
             "--proxy" => proxy = Some(value()?),
+            "--header-file" => {
+                let path = PathBuf::from(value()?);
+                headers = read_headers(&path)?;
+            }
             "-h" | "--help" => return Err(USAGE.to_string()),
             other => return Err(format!("unknown argument: {other}\n{USAGE}")),
         }
@@ -59,6 +94,7 @@ fn parse_args() -> Result<Args, String> {
         url: url.ok_or(USAGE)?,
         cookie_file,
         proxy,
+        headers,
     })
 }
 
@@ -85,8 +121,16 @@ fn write_cookies(path: &PathBuf, cookies: &BTreeMap<String, String>) -> std::io:
 /// A Cloudflare interstitial, which carries none of the page's own markup.
 fn challenged(page: &PageDocument) -> bool {
     let status = page.status.as_u16();
-    (status == 403 || status == 503)
-        && ["challenge-platform", "_cf_chl_opt", "cf-chl-widget", "Just a moment"]
+    if status != 403 && status != 503 {
+        return false;
+    }
+    // Cloudflare marks both a managed challenge and a plain block this way; only the former
+    // can be solved, and the body tells them apart.
+    page.headers
+        .get("cf-mitigated")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("challenge"))
+        || ["challenge-platform", "_cf_chl_opt", "cf-chl-widget", "Just a moment"]
             .iter()
             .any(|marker| page.html.contains(marker))
 }
@@ -110,10 +154,14 @@ fn load_cookies(client: &cfsolve::http::BrowserClient, url: &Url, cookies: &BTre
 }
 
 /// Navigates once, then once more: the first request after a challenge can fail in transit.
-async fn fetch_page(client: &cfsolve::http::BrowserClient, url: &Url) -> Result<PageDocument, String> {
-    match navigate(client, url).await {
+async fn fetch_page(
+    client: &cfsolve::http::BrowserClient,
+    url: &Url,
+    headers: &[(&str, &str)],
+) -> Result<PageDocument, String> {
+    match navigate_with(client, url, headers).await {
         Ok(page) => Ok(page),
-        Err(first) => navigate(client, url)
+        Err(first) => navigate_with(client, url, headers)
             .await
             .map_err(|second| format!("{first:#}; retry: {second:#}")),
     }
@@ -138,7 +186,12 @@ fn run(args: &Args) -> Result<Output, String> {
         load_cookies(&client, &args.url, &saved);
 
         let mut solved = false;
-        let mut page = fetch_page(&client, &args.url).await?;
+        let headers: Vec<(&str, &str)> = args
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str()))
+            .collect();
+        let mut page = fetch_page(&client, &args.url, &headers).await?;
 
         if challenged(&page) {
             let browser = Browser::read(&args.profile).map_err(|error| error.to_string())?;
@@ -166,7 +219,7 @@ fn run(args: &Args) -> Result<Output, String> {
                     );
                 }
             }
-            page = fetch_page(&client, &args.url).await?;
+            page = fetch_page(&client, &args.url, &headers).await?;
             if challenged(&page) {
                 return Err("Cloudflare challenge could not be cleared".to_string());
             }
@@ -176,12 +229,23 @@ fn run(args: &Args) -> Result<Output, String> {
         if let Some(path) = &args.cookie_file {
             write_cookies(path, &cookies).map_err(|error| error.to_string())?;
         }
+        let response_headers = page
+            .headers
+            .iter()
+            .filter_map(|(name, value)| {
+                value
+                    .to_str()
+                    .ok()
+                    .map(|value| (name.as_str().to_string(), value.to_string()))
+            })
+            .collect();
 
         Ok(Output {
             url: page.url.to_string(),
             status: page.status.as_u16(),
             html: page.html,
             cookies,
+            headers: response_headers,
             solved,
         })
     })

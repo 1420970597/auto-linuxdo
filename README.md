@@ -113,12 +113,14 @@ docker run --rm --init --network none --read-only --tmpfs /tmp:mode=1777 \
 
 ## 组件来源
 
-`forum-fetch` 依赖 [cfsolve](https://github.com/chris124567/cfsolve)，以 git submodule 形式放在 `vendor/cfsolve`。它带有打过补丁的 BoringSSL 和 HTTP/2 依赖，`Cargo.toml` 在 workspace 根声明了对应的 `[patch.crates-io]`。
+`forum-fetch` 依赖 [cfsolve](https://github.com/chris124567/cfsolve)，源码已直接放在 `vendor/cfsolve`（不再是子模块，克隆后无需额外初始化）。它带有打过补丁的 BoringSSL 和 HTTP/2 依赖，`Cargo.toml` 在 workspace 根声明了对应的 `[patch.crates-io]`。
 
-克隆后需要初始化子模块：
+向站点附加自定义请求头（例如 V2EX 个人访问令牌）时用 `--header-file`，文件是 JSON 对象，放在文件里可避免令牌出现在进程列表：
 
 ```bash
-git submodule update --init --recursive
+echo '{"authorization":"Bearer <token>"}' > /tmp/h.json
+./target/release/forum-fetch --profile vendor/cfsolve/profiles/safari-26-ios.json \
+  --url 'https://www.v2ex.com/api/v2/topics/1' --header-file /tmp/h.json --cookie-file /tmp/jar.json
 ```
 
 单独构建传输组件（需要 Rust 1.98、CMake、C/C++ 编译器、libclang 和 Git）：

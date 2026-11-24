@@ -17,6 +17,7 @@ DEFAULT_BINARY = "/usr/local/bin/forum-fetch"
 DEFAULT_PROFILE = "/usr/local/share/cfsolve/safari-26-ios.json"
 FETCH_TIMEOUT = 240
 JAR_NAME = "cf-cookies.json"
+HEADER_NAME = "fetch-headers.json"
 
 
 def same_origin(url: str, origin: str) -> bool:
@@ -35,12 +36,27 @@ def cookie_pairs(entries: list[dict]) -> dict[str, str]:
     return pairs
 
 
+def as_status(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
 class Response:
-    def __init__(self, url: str, status: int, text: str, solved: bool):
+    def __init__(
+        self,
+        url: str,
+        status: int,
+        text: str,
+        solved: bool,
+        headers: dict[str, str] | None = None,
+    ):
         self.url = url
         self.status = status
         self.text = text
         self.solved = solved
+        self.headers = headers or {}
 
 
 class Fetch:
@@ -52,18 +68,19 @@ class Fetch:
         profile: str | None = None,
         proxy: str | None = None,
     ):
+        self.root = root
         self.jar_path = root / JAR_NAME
+        self.header_path = root / HEADER_NAME
         self.binary = Path(binary or os.environ.get("LINUXDO_FETCH_BINARY", DEFAULT_BINARY))
         self.profile = Path(profile or os.environ.get("LINUXDO_FETCH_PROFILE", DEFAULT_PROFILE))
         self.proxy = proxy or os.environ.get("LINUXDO_FETCH_PROXY")
         self.lock = asyncio.Lock()
 
     def ready(self) -> bool:
-        return (
-            self.binary.is_file()
-            and os.access(self.binary, os.X_OK)
-            and self.profile.is_file()
-        )
+        try:
+            return self.binary.is_file() and os.access(self.binary, os.X_OK) and self.profile.is_file()
+        except OSError:
+            return False
 
     def _jar(self) -> dict[str, str]:
         try:
@@ -75,7 +92,13 @@ class Fetch:
     def _write_jar(self, jar: dict[str, str]) -> None:
         write_private(self.jar_path, json.dumps(jar, sort_keys=True))
 
-    async def get(self, url: str, *, cookies: dict[str, str] | None = None) -> Response:
+    async def get(
+        self,
+        url: str,
+        *,
+        cookies: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Response:
         if not self.ready():
             raise ForumError("transport_unavailable", "论坛传输组件尚未就绪。")
         async with self.lock:
@@ -92,6 +115,15 @@ class Fetch:
                 "--cookie-file",
                 str(self.jar_path),
             ]
+            if headers:
+                # A file keeps a token out of the process list.
+                write_private(
+                    self.header_path,
+                    json.dumps(
+                        {str(k).lower(): str(v) for k, v in headers.items()}, sort_keys=True
+                    ),
+                )
+                command += ["--header-file", str(self.header_path)]
             if self.proxy:
                 command += ["--proxy", self.proxy]
             try:
@@ -124,12 +156,16 @@ class Fetch:
                 code = "site_blocked" if "challenge" in message.lower() else "site_unavailable"
                 raise ForumError(code, f"论坛请求失败：{message}")
 
-            cookies = payload.get("cookies")
-            if isinstance(cookies, dict):
-                self._write_jar({str(k): str(v) for k, v in cookies.items()})
+            jar_cookies = payload.get("cookies")
+            if isinstance(jar_cookies, dict):
+                self._write_jar({str(k): str(v) for k, v in jar_cookies.items()})
+            response_headers = payload.get("headers")
             return Response(
                 url=str(payload.get("url", url)),
-                status=int(payload.get("status", 0)),
+                status=as_status(payload.get("status")),
                 text=str(payload.get("html", "")),
                 solved=bool(payload.get("solved", False)),
+                headers={str(k).lower(): str(v) for k, v in response_headers.items()}
+                if isinstance(response_headers, dict)
+                else {},
             )
