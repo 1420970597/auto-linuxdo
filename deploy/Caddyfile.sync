@@ -33,18 +33,6 @@ https://{$LINUXDO_SYNC_IP}:8443 {
 			header_up Host 127.0.0.1:8765
 		}
 	}
-	@capture {
-		method POST
-		path /page-capture
-	}
-	handle @capture {
-		request_body {
-			max_size 256KB
-		}
-		reverse_proxy linuxdo:8765 {
-			header_up Host 127.0.0.1:8765
-		}
-	}
 	handle {
 		respond 404
 	}
