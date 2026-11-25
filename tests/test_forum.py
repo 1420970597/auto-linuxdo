@@ -1,7 +1,14 @@
 import unittest
 
 from linuxdo.fetch import Response
-from linuxdo.forum import decode, search_results, topic_posts, topics_from
+from linuxdo.forum import (
+    category_topics_from,
+    decode,
+    resolve_category,
+    search_results,
+    topic_posts,
+    topics_from,
+)
 from linuxdo.state import ForumError
 
 
@@ -75,6 +82,63 @@ class TopicPostsTests(unittest.TestCase):
         with self.assertRaises(ForumError) as caught:
             topic_posts({"post_stream": {"posts": []}}, 1, 5, 1)
         self.assertEqual(caught.exception.code, "page_unrecognized")
+
+
+class CategoryTests(unittest.TestCase):
+    ENTRIES = [
+        {"id": 36, "slug": "welfare", "name": "福利羊毛", "topic_count": 20166},
+        {"id": 11, "slug": "gossip", "name": "搞七捻三", "topic_count": 280693},
+        {"id": 4, "slug": "develop", "name": "开发调优", "topic_count": 130296},
+        {"id": 34, "slug": "news", "name": "前沿快讯", "topic_count": 28660},
+    ]
+
+    def test_resolve_by_slug_name_id_and_unique_partial(self):
+        for wanted in ("welfare", "Welfare", "福利羊毛", "36", " 福利 ".strip()):
+            self.assertEqual(resolve_category(self.ENTRIES, wanted)["id"], 36, wanted)
+        self.assertEqual(resolve_category(self.ENTRIES, "羊毛")["id"], 36)
+
+    def test_resolve_rejects_unknown_and_ambiguous(self):
+        with self.assertRaises(ForumError) as caught:
+            resolve_category(self.ENTRIES + [{"id": 90, "slug": "welfare2", "name": "福利兑换"}], "福利")
+        self.assertEqual(caught.exception.code, "ambiguous_category")
+
+        with self.assertRaises(ForumError) as caught:
+            resolve_category(self.ENTRIES, "不存在的板块")
+        self.assertIn("可用板块", str(caught.exception))
+        self.assertEqual(caught.exception.code, "not_found")
+
+    def test_topics_carry_trust_level_and_skip_pinned(self):
+        payload = {
+            "users": [
+                {"id": 100, "username": "alice", "trust_level": 3},
+                {"id": 200, "username": "bob", "trust_level": 1},
+                {"id": 300, "username": "carol"},
+            ],
+            "topic_list": {
+                "topics": [
+                    {"id": 1, "title": "置顶", "pinned": True},
+                    {"id": 2, "title": "低等级", "posters": [{"user_id": 200}], "posts_count": 3},
+                    {"id": 3, "title": "高等级", "posters": [{"user_id": 100}],
+                     "posts_count": 5, "views": 42, "created_at": "2026-11-25T01:33:32.580Z"},
+                    {"id": 4, "title": "等级未知", "posters": [{"user_id": 300}], "posts_count": 1},
+                ]
+            },
+        }
+        topics, filtered, pinned, truncated = category_topics_from(payload, 10, 0)
+        self.assertEqual([t["topic_id"] for t in topics], [2, 3, 4])
+        self.assertEqual([t["author_trust_level"] for t in topics], [1, 3, None])
+        self.assertEqual((filtered, pinned), (0, 1))
+        self.assertEqual(topics[1]["reply_count"], 4)
+        self.assertEqual(topics[1]["views"], 42)
+        self.assertEqual(topics[1]["author"], "alice")
+
+        topics, filtered, _, _ = category_topics_from(payload, 10, 2)
+        self.assertEqual([t["topic_id"] for t in topics], [3])
+        self.assertEqual(filtered, 2)
+
+        topics, _, _, truncated = category_topics_from(payload, 1, 0)
+        self.assertEqual(len(topics), 1)
+        self.assertTrue(truncated)
 
 
 class DecodeTests(unittest.TestCase):

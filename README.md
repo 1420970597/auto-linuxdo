@@ -63,6 +63,7 @@ docker compose exec -T linuxdo python -m linuxdo.admin configure < linuxdo-cooki
 | `forum_status` | 返回传输组件和账号状态。调用时不向论坛发请求 |
 | `forum_latest` | `limit` 默认为 10，最多 25。返回主题 ID、标题和原文链接 |
 | `forum_search` | `query` 最多 160 字符，`limit` 默认为 10，最多 25。搜索需要登录会话 |
+| `forum_category_topics` | 按板块读取主题。`category` 可填英文短名（`welfare`）、中文名（`福利羊毛`）或板块 id；`order` 取 `default`/`created`/`views`/`posts`/`likes`/`activity`；`min_trust` 只保留发帖人信任等级不低于该值（TL0–TL4）的主题。返回作者、信任等级、回复数、浏览数和 `filtered_out` |
 | `forum_read_topic` | 指定 `topic_id`，可传 `post_number` 定位楼层。返回从该楼层起当前页面已加载的帖子，`limit` 默认为 5，最多 10 |
 
 ## V2EX

@@ -5,7 +5,7 @@ import os
 import re
 import secrets
 from contextlib import asynccontextmanager, suppress
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -31,6 +31,9 @@ PostNumber = Annotated[int, Field(ge=1, le=2_147_483_647)]
 PageNumber = Annotated[int, Field(ge=1, le=100_000)]
 V2EXNode = Annotated[str, StringConstraints(pattern=r"^[a-zA-Z0-9_-]{1,64}$")]
 SearchQuery = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=160)]
+CategoryName = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=64)]
+CategoryOrder = Literal["default", "created", "views", "posts", "likes", "activity"]
+TrustLevel = Annotated[int, Field(ge=0, le=4)]
 
 
 @mcp.tool(annotations=READ_ONLY, structured_output=True)
@@ -57,6 +60,24 @@ async def run(read) -> dict:
 async def forum_latest(limit: TopicLimit = 10) -> dict[str, Any]:
     """列出 Linux.do 最新主题，返回标题、主题 ID 和来源链接。"""
     return await run(lambda fetch, cookies: forum.latest(fetch, limit, cookies))
+
+
+@mcp.tool(annotations=READ_ONLY, structured_output=True)
+async def forum_category_topics(
+    category: CategoryName,
+    order: CategoryOrder = "created",
+    page: PageNumber = 1,
+    limit: TopicLimit = 10,
+    min_trust: TrustLevel = 0,
+) -> dict[str, Any]:
+    """按板块列出 Linux.do 主题。category 可为英文短名（如 welfare）、中文名（如 福利羊毛）
+    或板块 id；order 为 default/created/views/posts/likes/activity；
+    min_trust 只保留发帖人信任等级不低于 TL0–TL4 中该值的主题。"""
+    return await run(
+        lambda fetch, cookies: forum.category_topics(
+            fetch, category, order, page, limit, min_trust, cookies
+        )
+    )
 
 
 @mcp.tool(annotations=READ_ONLY, structured_output=True)
